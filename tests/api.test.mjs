@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {spawn,spawnSync} from 'node:child_process';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {seal,unseal} from '../lib/vault.mjs';
+import {digest,totp} from '../lib/security.mjs';
+import {DEFAULT_RATES} from '../lib/domain.mjs';
+const root=process.cwd();
+const tlsEnabled=process.env.VPS_TEST_TLS==='1';
+test(`${tlsEnabled?'HTTPS':'private HTTP'} API authentication, encryption, CRUD, CSRF, 2FA and recovery`,async t=>{
+  const dir=`runtime/test-${randomUUID()}`;fs.mkdirSync(dir,{mode:0o700});fs.chownSync(dir,62031,62031);
+  const key=randomBytes(32),setup=randomBytes(32).toString('hex'),port=tlsEnabled?18788:18787,origin=`${tlsEnabled?'https':'http'}://127.0.0.1:${port}`;
+  const dataFile=`${dir}/workspace.vault`,configFile=`${dir}/config.json`;
+  fs.writeFileSync(dataFile,seal({version:1,revision:0,account:null,servers:[],commands:[],settings:{rates:DEFAULT_RATES,rateSource:'Synthetic test'}},key),{mode:0o600});fs.chownSync(dataFile,62031,62031);
+  fs.writeFileSync(configFile,JSON.stringify({mode:tlsEnabled?'public':'private',host:'127.0.0.1',port,origin,...(tlsEnabled?{tls:{key:'.private/tls/server.key',cert:'.private/tls/server.crt'}}:{}),key:key.toString('base64'),setupHash:digest(setup),serviceUID:62031,serviceGID:62031,vaultFile:dataFile}),{mode:0o600});
+  const child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,VPS_CONFIG:configFile},stdio:['ignore','pipe','pipe']});let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>output+=x);
+  t.after(async()=>{child.kill('SIGTERM');await new Promise(r=>{if(child.exitCode!==null)return r();child.once('exit',r);setTimeout(r,6000).unref();});fs.rmSync(dir,{recursive:true,force:true});});
+  let ready=false;for(let i=0;i<60;i++){try{const r=await fetch(origin+'/api/health');if(r.ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}assert.ok(ready,output);
+  let cookie='',csrf='',revision=0;
+  async function req(path,method='GET',data,extra={}){const response=await fetch(origin+path,{method,headers:{Origin:origin,...(cookie?{Cookie:cookie}:{}),...(csrf?{'X-CSRF-Token':csrf}:{}),'If-Match':String(revision),...(data!==undefined?{'Content-Type':'application/json'}:{}),...extra},body:data!==undefined?JSON.stringify(data):undefined});const set=response.headers.get('set-cookie');if(set)cookie=set.split(';')[0];let value;try{value=await response.json();}catch{}if(value?.csrfToken)csrf=value.csrfToken;if(Number.isInteger(value?.revision))revision=value.revision;return{response,value};}
+  let r=await req('/api/workspace');assert.equal(r.response.status,401);
+  r=await req('/api/session');assert.equal(r.value.setupRequired,true);
+  r=await req('/api/setup','POST',{token:setup,username:'qa_admin',password:'short'});assert.equal(r.response.status,400);
+  const password='Synthetic-only-password-3981';
+  r=await req('/api/setup','POST',{token:setup,username:'qa_admin',password});assert.equal(r.response.status,201);assert.ok(r.response.headers.get('set-cookie').includes('HttpOnly'));assert.ok(r.response.headers.get('set-cookie').includes('SameSite=Strict'));assert.ok(csrf);if(tlsEnabled){assert.ok(r.response.headers.get('set-cookie').startsWith('__Host-vps_session='));assert.ok(r.response.headers.get('set-cookie').includes('; Secure'));}
+  r=await req('/api/setup','POST',{token:setup,username:'another',password});assert.equal(r.response.status,409);
+  r=await req('/api/servers','POST',{name:'Blocked'},{'X-CSRF-Token':'invalid'});assert.equal(r.response.status,403);
+  r=await req('/api/servers','POST',{name:'Blocked'},{Origin:'https://evil.example'});assert.equal(r.response.status,403);
+  r=await req('/api/servers','POST',{name:'Synthetic host',ipAddress:'192.0.2.10',monthlyCostAmount:'12',monthlyCostCurrency:'CNY',monthlyCostCycle:'monthly',sshPassword:'TEST-NOT-A-REAL-SERVER-PASSWORD',notes:'<img src=x onerror=alert(1)>'});assert.equal(r.response.status,201);const id=r.value.server.id;assert.equal(r.value.server.sshPassword,undefined);assert.equal(r.value.server.hasSecrets.sshPassword,true);
+  r=await req('/api/workspace');assert.equal(r.value.costs.monthlyTotal,12);assert.equal(r.value.costs.yearlyTotal,144);assert.equal(r.value.servers[0].sshPassword,undefined);
+  r=await req(`/api/servers/${id}`,'PUT',{name:'Updated host'});assert.equal(r.response.status,200);
+  r=await req(`/api/servers/${id}`,'PUT',{name:'Stale'},{'If-Match':'0'});assert.equal(r.response.status,409);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{}, {'X-CSRF-Token':'invalid'});assert.equal(r.response.status,403);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{}, {Origin:'https://evil.example'});assert.equal(r.response.status,403);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{}, {Cookie:''});assert.equal(r.response.status,401);
+  r=await req(`/api/servers/${id}/secrets`);assert.equal(r.response.status,404);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{});assert.equal(r.response.status,200);assert.equal(r.value.sshPassword,'TEST-NOT-A-REAL-SERVER-PASSWORD');assert.equal(r.response.headers.get('cache-control'),'no-store');
+  r=await req('/api/security/totp/start','POST',{});assert.equal(r.response.status,401,'Security settings still require the current password');
+  r=await req('/api/commands','POST',{title:'Synthetic command',command:'echo test',category:'QA',note:'test only'});assert.equal(r.response.status,201);const commandID=r.value.command.id;
+  const encrypted=fs.readFileSync(dataFile,'utf8');for(const text of ['Updated host','TEST-NOT-A-REAL-SERVER-PASSWORD','Synthetic-only-password-3981','echo test'])assert.ok(!encrypted.includes(text));assert.equal(unseal(encrypted,key).servers.length,1);
+  r=await req('/.private/config.json');assert.equal(r.response.status,404);
+  r=await req('/runtime/workspace.vault');assert.equal(r.response.status,404);
+  r=await req('/api/security/totp/start','POST',{password});assert.equal(r.response.status,200);const secret=r.value.secret;
+  const submittedOTP=totp(secret);r=await req('/api/security/totp/confirm','POST',{code:submittedOTP});assert.equal(r.response.status,200);const codes=r.value.recoveryCodes;assert.equal(codes.length,8);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{});assert.equal(r.response.status,200,'Logged-in users can reveal secrets even when TOTP is enabled');assert.equal(r.value.sshPassword,'TEST-NOT-A-REAL-SERVER-PASSWORD');
+  r=await req('/api/logout','POST',{});assert.equal(r.response.status,200);
+  r=await req(`/api/servers/${id}/secrets`,'POST',{});assert.equal(r.response.status,401);
+  r=await req('/api/login','POST',{username:'qa_admin',password});assert.equal(r.response.status,401);
+  r=await req('/api/login','POST',{username:'qa_admin',password,otp:submittedOTP});assert.equal(r.response.status,401,'Used TOTP must not be replayed');
+  r=await req('/api/login','POST',{username:'qa_admin',password,otp:codes[0]});assert.equal(r.response.status,200);
+  r=await req('/api/security/totp/disable','POST',{password,code:codes[1]});assert.equal(r.response.status,200);
+  r=await req(`/api/commands/${commandID}`,'DELETE');assert.equal(r.response.status,200);
+  r=await req(`/api/servers/${id}`,'DELETE');assert.equal(r.response.status,200);
+  r=await req('/api/workspace');assert.equal(r.value.servers.length,0);assert.equal(r.value.commands.length,0);
+  r=await req('/api/security/password','POST',{currentPassword:password,newPassword:'Another-test-only-password-4492'});assert.equal(r.response.status,200);
+  r=await req('/api/workspace');assert.equal(r.response.status,401);
+  r=await req('/api/login','POST',{username:'qa_admin',password});assert.equal(r.response.status,401);
+  r=await req('/api/login','POST',{username:'qa_admin',password:'Another-test-only-password-4492'});assert.equal(r.response.status,200);
+  assert.ok(!output.includes(password));assert.ok(output.includes('"uid":62031'));
+  const backupPath=`runtime/backups/restore-test-${randomUUID()}.vpsvault`;
+  try{fs.writeFileSync(backupPath,encrypted,{mode:0o600});child.kill('SIGTERM');await new Promise(r=>{if(child.exitCode!==null)return r();child.once('exit',r);});const restored=spawnSync(process.execPath,['bin/restore.mjs',backupPath],{cwd:root,env:{...process.env,VPS_CONFIG:configFile},encoding:'utf8'});assert.equal(restored.status,0,restored.stderr);assert.equal(unseal(fs.readFileSync(dataFile,'utf8'),key).servers.length,1);assert.equal(fs.statSync(dataFile).uid,62031);}finally{fs.rmSync(backupPath,{force:true});}
+
+});

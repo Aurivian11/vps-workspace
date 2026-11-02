@@ -1,0 +1,22 @@
+# Runtime and all private material
+.private/
+runtime/
+.cache/
+tmp/
+.qa/
+reports/
+exports/
+node_modules/
+.env
+.env.*
+*.log
+*.pid
+*.vpsvault
+*.vault
+*.pending
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.DS_Store

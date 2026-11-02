@@ -1,0 +1,104 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {spawn} from 'node:child_process';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {seal,unseal} from '../lib/vault.mjs';
+import {digest} from '../lib/security.mjs';
+import {DEFAULT_RATES,normalizeServer} from '../lib/domain.mjs';
+
+test('expiry reminder is an opt-in, strictly boolean, preserved across partial updates',()=>{
+  const server=normalizeServer({name:'Synthetic machine'});
+  assert.equal(server.expiryReminder,false);
+  const enabled=normalizeServer({expiryReminder:true},server);
+  assert.equal(enabled.expiryReminder,true);
+  assert.equal(normalizeServer({notes:'New note'},enabled).expiryReminder,true);
+  assert.equal(normalizeServer({expiryReminder:false},enabled).expiryReminder,false);
+  for(const value of ['true',1,null,{},[]])assert.throws(()=>normalizeServer({expiryReminder:value},server),{status:400});
+});
+
+test('Telegram configuration API: auth, reauthentication, CSRF, revision, encrypted secret, saved-config test',async t=>{
+  const dir=`runtime/telegram-api-${randomUUID()}`;
+  fs.mkdirSync(dir,{mode:0o700});fs.chownSync(dir,62031,62031);
+  const key=randomBytes(32),setup=randomBytes(32).toString('hex'),port=19893,origin=`http://127.0.0.1:${port}`;
+  const configFile=`${dir}/config.json`,vaultFile=`${dir}/workspace.vault`,mockLog=`${dir}/mock.json`;
+  const initial={version:1,revision:0,account:null,servers:[],commands:[],settings:{rates:DEFAULT_RATES}};
+  fs.writeFileSync(vaultFile,seal(initial,key),{mode:0o600});fs.chownSync(vaultFile,62031,62031);
+  fs.writeFileSync(configFile,JSON.stringify({mode:'private',host:'127.0.0.1',port,origin,key:key.toString('base64'),setupHash:digest(setup),serviceUID:62031,serviceGID:62031,vaultFile}),{mode:0o600});
+  const preload=`${dir}/mock-fetch.mjs`,modeFile=`${dir}/mock-mode`;
+  fs.writeFileSync(modeFile,'success',{mode:0o600});fs.chownSync(modeFile,62031,62031);
+  fs.writeFileSync(preload,`import fs from 'node:fs';\nconst original=globalThis.fetch;\nglobalThis.fetch=async(url,options)=>{if(String(url).startsWith('https://api.telegram.org/bot')){const mode=fs.readFileSync(${JSON.stringify(modeFile)},'utf8');if(mode==='uncertain')throw new Error('Secret URL '+url);if(mode==='rejected')return new Response(JSON.stringify({ok:false,error_code:403,description:'Do not echo '+url}),{status:403});const request=JSON.parse(options.body);fs.writeFileSync(${JSON.stringify(mockLog)},JSON.stringify({method:options.method,request,count:(fs.existsSync(${JSON.stringify(mockLog)})?JSON.parse(fs.readFileSync(${JSON.stringify(mockLog)},'utf8')).count||0:0)+1}),{mode:0o600});return new Response(JSON.stringify({ok:true,result:{message_id:101}}),{status:200,headers:{'Content-Type':'application/json'}});}return original(url,options);};\n`,{mode:0o600});
+  const child=spawn(process.execPath,['--import',`./${preload}`,'server.mjs'],{cwd:process.cwd(),env:{...process.env,VPS_CONFIG:configFile},stdio:['ignore','pipe','pipe']});
+  let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>output+=x);
+  t.after(async()=>{child.kill('SIGTERM');await new Promise(resolve=>{if(child.exitCode!==null)return resolve();child.once('exit',resolve);setTimeout(resolve,6500).unref();});fs.rmSync(dir,{recursive:true,force:true});});
+  let ready=false;for(let i=0;i<70;i++){try{if((await fetch(origin+'/api/health')).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}assert.ok(ready,output);
+  const health=await (await fetch(origin+'/api/health')).json();assert.equal(health.worker.loopHealthy,true);assert.ok(health.worker.lastCheckedAt);
+  let cookie='',csrf='',revision=0;
+  async function request(path,method='GET',data,headers={}){
+    const r=await fetch(origin+path,{method,headers:{Origin:origin,'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':csrf,'If-Match':String(revision),...headers},body:data===undefined?undefined:JSON.stringify(data)});
+    if(r.headers.has('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];
+    const body=await r.json();if(body.revision!==undefined&&r.ok)revision=body.revision;return {status:r.status,body};
+  }
+  assert.equal((await request('/api/settings/telegram','PUT',{enabled:false})).status,401);
+  assert.equal((await request('/api/settings/telegram/servers','PUT',{serverIds:[]})).status,401);
+  const password='Synthetic-admin-password!2026';
+  const registered=await request('/api/setup','POST',{token:setup,username:'testadmin',password});assert.equal(registered.status,201);csrf=registered.body.csrfToken;
+  let r=await request('/api/workspace');assert.equal(r.status,200);assert.equal(r.body.settings.telegram.enabled,false);assert.equal(r.body.settings.telegram.hasToken,false);
+  assert.equal(r.body.settings.telegram.timeZone,'Asia/Shanghai');assert.equal(r.body.settings.telegram.daysBefore,7);
+  r=await request('/api/servers','POST',{name:'Only synthetic machine',renewalDate:'2099-12-31T00:00:00.000Z',expiryReminder:true,sshPassword:'Synthetic-server-secret'});assert.equal(r.status,201);const id=r.body.server.id;assert.equal(r.body.server.expiryReminder,true);
+  r=await request('/api/servers/'+id,'PUT',{notes:'Keep reminder preference'});assert.equal(r.body.server.expiryReminder,true);
+  assert.equal((await request('/api/servers/'+id,'PUT',{expiryReminder:'yes'})).status,400);
+  const botToken='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk';
+  const settings={enabled:true,botToken,chatId:'-1001234567890',password};
+  assert.equal((await request('/api/settings/telegram','PUT',settings,{'X-CSRF-Token':'invalid'})).status,403);
+  assert.equal((await request('/api/settings/telegram','PUT',settings,{'If-Match':'-1'})).status,409);
+  assert.equal((await request('/api/settings/telegram','PUT',{...settings,password:'wrong-password'})).status,401);
+  assert.equal((await request('/api/settings/telegram','PUT',{...settings,botToken:'https://attacker.invalid/'})).status,400);
+  r=await request('/api/settings/telegram','PUT',settings);assert.equal(r.status,200);assert.equal(r.body.telegram.hasToken,true);assert.ok(!JSON.stringify(r.body).includes(botToken));
+  r=await request('/api/workspace');assert.equal(r.body.settings.telegram.configured,true);assert.equal(r.body.settings.telegram.chatId,settings.chatId);assert.ok(!JSON.stringify(r.body).includes(botToken));assert.equal(r.body.settings.telegram.botToken,undefined);
+  await t.test('batch selection is atomic, revision-protected and changes only reminder flags',async()=>{
+    const created=await request('/api/servers','POST',{name:'Second synthetic machine',expiryReminder:false,notes:'Preserve these notes',panelPassword:'Preserve this password'});
+    assert.equal(created.status,201);const otherId=created.body.server.id;
+    const read=()=>unseal(fs.readFileSync(vaultFile,'utf8'),key);
+    const before=read(),oldRevision=revision;
+    const endpoint='/api/settings/telegram/servers';
+    assert.equal((await request(endpoint,'PUT',{serverIds:[]},{'X-CSRF-Token':'invalid'})).status,403);
+    assert.equal((await request(endpoint,'PUT',{serverIds:[]},{'If-Match':String(oldRevision-1)})).status,409);
+    for(const serverIds of [null,{},['bad-id'],[id,id],[randomUUID()],Array(1001).fill(id)]){
+      assert.equal((await request(endpoint,'PUT',{serverIds})).status,400);
+      assert.deepEqual(read(),before);
+    }
+    assert.equal((await request(endpoint,'PUT',{})).status,400);
+    let result=await request(endpoint,'PUT',{serverIds:[]});
+    assert.equal(result.status,200);assert.equal(result.body.changedCount,1);assert.equal(result.body.selectedCount,0);assert.equal(revision,oldRevision+1);
+    let state=read();assert.ok(state.servers.every(server=>server.expiryReminder===false));
+    assert.deepEqual(state.settings,before.settings);assert.deepEqual(state.account,before.account);assert.deepEqual(state.commands,before.commands);
+    const metadata=server=>Object.fromEntries(Object.entries(server).filter(([name])=>!['expiryReminder','updatedAt'].includes(name)));
+    for(const server of state.servers)assert.deepEqual(metadata(server),metadata(before.servers.find(x=>x.id===server.id)));
+    result=await request(endpoint,'PUT',{serverIds:[id,otherId]});assert.equal(result.status,200);assert.equal(result.body.changedCount,2);assert.equal(result.body.selectedCount,2);assert.ok(read().servers.every(server=>server.expiryReminder===true));
+    const timestamp=read().servers.find(x=>x.id===id).updatedAt;
+    result=await request(endpoint,'PUT',{serverIds:[id],enabled:false,botToken:'Must not be accepted here'});assert.equal(result.status,200);assert.equal(result.body.changedCount,1);assert.equal(result.body.selectedCount,1);
+    state=read();assert.equal(state.servers.find(x=>x.id===id).updatedAt,timestamp);assert.equal(state.servers.find(x=>x.id===otherId).expiryReminder,false);assert.deepEqual(state.settings,before.settings);
+    const unchangedServers=read().servers,noOpRevision=revision,confirmationId=randomUUID(),beforeCount=JSON.parse(fs.readFileSync(mockLog,'utf8')).count;
+    result=await request(endpoint,'PUT',{serverIds:[id],confirmationId});assert.equal(result.status,200);assert.equal(result.body.changedCount,0);assert.equal(revision,noOpRevision);assert.deepEqual(read().servers,unchangedServers);assert.equal(result.body.confirmation.status,'sent');
+    const afterConfirmation=fs.readFileSync(vaultFile,'utf8');assert.equal(JSON.parse(fs.readFileSync(mockLog,'utf8')).count,beforeCount+1);
+    result=await request(endpoint,'PUT',{serverIds:[id],confirmationId},{'If-Match':'-1'});assert.equal(result.status,200);assert.equal(result.body.confirmation.status,'sent');assert.equal(JSON.parse(fs.readFileSync(mockLog,'utf8')).count,beforeCount+1);assert.equal(fs.readFileSync(vaultFile,'utf8'),afterConfirmation);
+    result=await request(endpoint,'PUT',{serverIds:[otherId],confirmationId});assert.equal(result.status,409);assert.equal(fs.readFileSync(vaultFile,'utf8'),afterConfirmation);
+    result=await request(endpoint,'PUT',{serverIds:[id],confirmationId:'bad'});assert.equal(result.status,400);assert.equal(fs.readFileSync(vaultFile,'utf8'),afterConfirmation);
+    const staleRevision=revision;assert.equal((await request('/api/servers/'+otherId,'DELETE')).status,200);
+    const afterDelete=read();assert.equal((await request(endpoint,'PUT',{serverIds:[id,otherId]},{'If-Match':String(staleRevision)})).status,409);
+    assert.equal((await request(endpoint,'PUT',{serverIds:[id,otherId]})).status,400);assert.deepEqual(read(),afterDelete);
+  });
+  let encrypted=fs.readFileSync(vaultFile,'utf8');assert.ok(!encrypted.includes(botToken));assert.equal(unseal(encrypted,key).settings.telegram.botToken,botToken);
+  r=await request('/api/settings/telegram','PUT',{enabled:false,chatId:settings.chatId,botToken:'',password});assert.equal(r.status,200);assert.equal(unseal(fs.readFileSync(vaultFile,'utf8'),key).settings.telegram.botToken,botToken);
+  r=await request('/api/settings/telegram/test','POST',{password});assert.equal(r.status,200);const sent=JSON.parse(fs.readFileSync(mockLog,'utf8'));assert.equal(sent.method,'POST');assert.equal(sent.request.chat_id,settings.chatId);assert.match(sent.request.text,/测试消息/);assert.ok(!sent.request.text.includes('Synthetic-server-secret'));assert.ok(!sent.request.text.includes(botToken));
+  fs.writeFileSync(modeFile,'uncertain');r=await request('/api/settings/telegram/test','POST',{password});assert.equal(r.status,502);assert.match(r.body.error,/发送结果暂时无法确认/);assert.ok(!JSON.stringify(r.body).includes(botToken));
+  fs.writeFileSync(modeFile,'rejected');r=await request('/api/settings/telegram/test','POST',{password});assert.equal(r.status,502);assert.match(r.body.error,/检查 Bot Token/);assert.ok(!JSON.stringify(r.body).includes(botToken));
+  r=await request('/api/settings/telegram/servers','PUT',{serverIds:[id],confirmationId:randomUUID()});assert.equal(r.status,200);assert.equal(r.body.confirmation.status,'failed');assert.ok(!JSON.stringify(r.body).includes(botToken));assert.equal(unseal(fs.readFileSync(vaultFile,'utf8'),key).servers.find(x=>x.id===id).expiryReminder,true);
+  assert.equal((await request('/api/settings/telegram/retry','POST',{password})).status,400);
+  r=await request('/api/settings/telegram/retry','POST',{password,confirm:true});assert.equal(r.status,200);assert.equal(r.body.retried,0);
+  assert.equal((await request('/api/settings/telegram','PUT',{enabled:true,clearToken:true,password})).status,400);
+  r=await request('/api/settings/telegram','PUT',{enabled:false,clearToken:true,password});assert.equal(r.status,200);assert.equal(r.body.telegram.hasToken,false);
+  const saved=unseal(fs.readFileSync(vaultFile,'utf8'),key);assert.equal(saved.settings.telegram.botToken,'');assert.equal(saved.servers[0].sshPassword,'Synthetic-server-secret');assert.equal(saved.servers[0].expiryReminder,true);
+  assert.ok(!output.includes(botToken));
+});

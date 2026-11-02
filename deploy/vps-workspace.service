@@ -1,0 +1,25 @@
+[Unit]
+Description=VPS workspace with Telegram reminder health supervision
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/VPS
+Environment=TMPDIR=/root/VPS/tmp
+Environment=XDG_CACHE_HOME=/root/VPS/.cache
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+ExecStart=/usr/bin/flock --nonblock --no-fork /root/VPS/.private/supervisor.lock /usr/local/bin/node /root/VPS/bin/supervisor.mjs --locked
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=35
+StandardOutput=null
+StandardError=null
+# The supervisor rotates its own private logs under /root/VPS/.private.
+
+[Install]
+WantedBy=multi-user.target
