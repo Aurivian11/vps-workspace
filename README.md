@@ -54,7 +54,7 @@ bash bin/start.sh
 | `key` / `setupHash` | 初始化生成的密钥与设置令牌摘要；保留原值 |
 | `serviceUID` / `serviceGID` | 初始化默认使用 `62031` |
 
-监督器的 HTTPS 检查读取 `.private/tls/ca.crt` 并验证 `vps-internal` 名称；后端证书必须具有该名称的 SAN，且由该 CA 签发。代理应保留正确的 Host，并验证后端证书。公网证书与内部证书续期由部署者配置。
+监督器的 HTTPS 检查读取 `.private/tls/ca.crt` 并验证回环地址 `127.0.0.1`；后端证书必须包含 `IP:127.0.0.1` SAN，且由该 CA 签发。如果反向代理使用 `vps-internal` 验证后端证书，还需包含对应的 DNS SAN。代理应保留正确的 Host，并验证后端证书。公网证书与内部证书续期由部署者配置。
 
 `deploy/vps-workspace.service` 是可选的系统服务模板。登记前核对 Node 路径和工作目录；系统服务登记属于系统级操作。登记后启动、停止仍使用项目内的 `bin/start.sh`、`bin/stop.sh`。
 
@@ -88,6 +88,8 @@ bash bin/start.sh
 mkdir -p runtime/backups tmp .cache
 node --test --test-concurrency=1 tests/*.test.mjs
 ```
+
+测试子进程会降权到 UID/GID `62031`。检出目录及其祖先必须允许该身份遍历，源码需可读，`runtime/` 需可遍历；各测试会为自己的临时数据目录设置独立属主。不要为此开放 `.private/`、认证文件或其它项目目录。
 
 监督器的 HTTPS 测试需要测试副本中的 `.private/tls/ca.crt`、`server.crt`、`server.key`；使用自己生成的测试 CA，服务器证书包含 `DNS:vps-internal` 和 `IP:127.0.0.1` SAN。不要复制生产 TLS 私钥来运行测试。`VPS_TEST_TLS=1` 可启用 API 的 HTTPS 模式，此时需让测试客户端信任该测试 CA。
 

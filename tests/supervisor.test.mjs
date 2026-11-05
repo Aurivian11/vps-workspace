@@ -60,9 +60,15 @@ test('successful check resets failures and startup grace avoids early restarts',
 });
 
 test('hung child is killed only after grace and replacement waits for OS exit',async t=>{
-  const f=fixture(t,'ignore');let fail=true;const s=supervise(f,{gracefulStop:80,healthCheck:async()=>!f.read().some(x=>x.event==='start')||!fail});t.after(()=>s.stop());
+  const f=fixture(t,'ignore');let fail=true;
+  const s=supervise(f,{gracefulStop:80,healthCheck:async()=>{
+    // A prior child's start event cannot mark its replacement as ready.
+    const ready=f.read().some(x=>x.event==='start'&&x.pid===s.snapshot().childPID);
+    return !ready||!fail;
+  }});t.after(()=>s.stop());
   await until(()=>f.read().filter(x=>x.event==='start').length===2);fail=false;
-  const starts=f.read().filter(x=>x.event==='start');assert.equal(processIdentity(starts[0].pid,f.script),null);assert.ok(processIdentity(starts[1].pid,f.script));await s.stop();
+  const starts=f.read().filter(x=>x.event==='start');assert.equal(s.snapshot().restarts,1);
+  assert.equal(processIdentity(starts[0].pid,f.script),null);assert.ok(processIdentity(starts[1].pid,f.script));await s.stop();
 });
 
 test('manual stop during crash backoff prevents a replacement',async t=>{
