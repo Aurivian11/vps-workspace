@@ -103,7 +103,7 @@ test('uncertain-message retry requires deliberate duplicate-risk confirmation',a
 });
 test('reminder scheduling details and machine configuration stay visible',()=>{
  const f=fixture();f.run('S.workspace.servers=[{expiryReminder:true,renewalDate:null},{expiryReminder:false}];');
- const html=f.run('telegramSettingsCard()');assert.match(html,/提前 7 天/);assert.match(html,/09:00/);assert.match(html,/每 5 分钟/);assert.match(html,/已选择 1 台/);assert.match(html,/1 台未填写有效续费日期/);
+ const html=f.run('telegramSettingsCard()');assert.match(html,/到期前 7 天、前 1 天、当天各提醒一次/);assert.match(html,/09:00/);assert.match(html,/每 5 分钟/);assert.match(html,/已选择 1 台/);assert.match(html,/1 台未填写有效续费日期/);
  assert.match(html,/0–7 天/);assert.match(html,/已过期的机器不再补发/);
 });
 test('known failures expose manual retry even when there are no uncertain deliveries',()=>{

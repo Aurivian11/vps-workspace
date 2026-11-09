@@ -177,3 +177,47 @@ test('table replies opt into HTML without changing ordinary reminder message for
   await sendTelegram(config,'ordinary reminder',{fetchImpl});assert.ok(!Object.hasOwn(bodies[1],'parse_mode'));
   await assert.rejects(sendTelegram(config,'message',{fetchImpl,parseMode:'Markdown'}),/格式/);assert.equal(bodies.length,2);
 });
+
+test('three reminder points per renewal date: 7 days, 1 day and the due day, each once', async () => {
+  const f = fixture([server('a', '2026-10-21')]);
+  f.time('2026-10-14T01:00:00Z'); await f.worker.tick(); await f.worker.tick();
+  for (const day of ['15', '16', '17', '18', '19']) { f.time(`2026-10-${day}T03:00:00Z`); await f.worker.tick(); }
+  assert.equal(f.messages.length, 1); assert.match(f.messages[0].text, /剩余 7 天/);
+  f.time('2026-10-20T00:59:00Z'); await f.worker.tick(); assert.equal(f.messages.length, 1);
+  f.time('2026-10-20T01:00:00Z'); await f.worker.tick(); await f.newWorker().tick();
+  assert.equal(f.messages.length, 2); assert.match(f.messages[1].text, /明天到期/);
+  f.time('2026-10-21T01:00:00Z'); await f.worker.tick(); await f.worker.tick();
+  assert.equal(f.messages.length, 3); assert.match(f.messages[2].text, /今天到期/);
+  f.time('2026-10-22T01:00:00Z'); await f.worker.tick(); assert.equal(f.messages.length, 3);
+  assert.deepEqual(Object.values(f.state().telegramDeliveries).map(r => r.stage).sort(), ['day', 'early', 'eve']);
+});
+test('late enablement only sends the current reminder point, never a backlog', async () => {
+  const f = fixture([server('a', '2026-10-15')]);
+  await f.worker.tick();
+  assert.equal(f.messages.length, 1); assert.match(f.messages[0].text, /明天到期/);
+  f.time('2026-10-15T01:00:00Z'); await f.worker.tick();
+  assert.equal(f.messages.length, 2); assert.match(f.messages[1].text, /今天到期/);
+});
+test('receipts written before reminder points existed still suppress the 7-day reminder', async () => {
+  const { createHash } = await import('node:crypto');
+  const sha = (v) => createHash('sha256').update(v).digest('hex');
+  const f = fixture([server('a', '2026-10-21')]);
+  const dest = sha(`${TOKEN.split(':')[0]}\n${config.chatId}`);
+  f.mutate(s => { s.telegramDeliveries = { [sha(`a\n2026-10-21\n${dest}`)]: { state: 'sent', serverId: 'a', renewalDate: '2026-10-21', destination: dest } }; });
+  await f.worker.tick(); assert.equal(f.messages.length, 0);
+  f.time('2026-10-20T01:00:00Z'); await f.worker.tick(); assert.equal(f.messages.length, 1); assert.match(f.messages[0].text, /明天到期/);
+});
+
+test('a failure from an earlier reminder point stops counting once a later point is current', async () => {
+  let fail = true;
+  const f = fixture([server('a', '2026-10-21')], { send: async () => { if (fail) throw new TelegramDeliveryError('rejected', { deliveryState: 'failed' }); return { messageId: 1 }; } });
+  await f.worker.tick();
+  assert.equal(f.worker.status().failedCount, 1);
+  fail = false;
+  f.time('2026-10-20T01:00:00Z');
+  assert.equal(f.worker.status().failedCount, 0);
+  assert.equal(f.worker.retryUncertain({ confirmed: true }).resetCount, 0);
+  await f.worker.tick();
+  assert.equal(f.worker.status().sentCount, 1);
+  assert.equal(f.worker.status().lastError, '');
+});

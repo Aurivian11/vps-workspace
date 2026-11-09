@@ -201,7 +201,7 @@ const handler=async(req,res)=>{headers(res);const requestID=token(8);res.setHead
     const telegram=structuredClone(vault.state.settings.telegram||{});
     if(!publicTelegram(telegram).configured)throw fail(400,'请先保存 Bot Token 和 Chat ID。');
     telegramTestInFlight=true;
-    try{await sendTelegram(telegram,'VPS 管家 · Telegram 测试消息\n连接成功。开启提醒的机器将在到期前 7 天收到通知。\n'+origin.origin);}
+    try{await sendTelegram(telegram,'VPS 管家 · Telegram 测试消息\n连接成功。开启提醒的机器将在到期前 7 天、前 1 天和到期当天收到通知。\n'+origin.origin);}
     catch(error){const safeMessage=error.deliveryState==='uncertain'?'发送结果暂时无法确认，请先检查 Telegram，避免重复发送。':'测试发送失败，请检查 Bot Token、Chat ID，并先向机器人发送 /start。';throw Object.assign(fail(502,safeMessage),{publicMessage:safeMessage});}
     finally{telegramTestInFlight=false;}
     auth(s);json(res,200,{ok:true,message:'测试消息已发送，请查看 Telegram。'});return;
