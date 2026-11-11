@@ -138,6 +138,12 @@ test('calendar dates use local today and preserve stored days in both timezone d
     assert.equal(f.run('dateValue("2026-10-13T00:00:00.000Z")'),'2026-10-13');
     assert.equal(f.run('shortDate("2026-10-13T00:00:00.000Z")'),'2026/10/13');
     assert.equal(f.run('dateValue("")'),'');assert.equal(f.run('dateValue("not-a-date")'),'');
+    // Page dates follow the server reminder parser; unreadable text is never shown as a due date.
+    assert.equal(f.run('dateValue("2026/12/5")'),'2026-12-05');assert.equal(f.run('dateValue("2026-1-5")'),'2026-01-05');
+    assert.equal(f.run('dateValue("12/05/2026")'),'');assert.equal(f.run('dateValue("2026-02-31")'),'');
+    assert.equal(f.run('shortDate("12/05/2026")'),'日期无法识别');assert.equal(f.run('shortDate("")'),'未设置');
+    assert.equal(f.run('daysLeft({renewalDateText:"12/05/2026"})'),null);
+    assert.equal(f.run('dueText({renewalDateText:"12/05/2026"})'),'续费日期无法识别，请重新填写');assert.equal(f.run('dueText({})'),'未设置续费日期');
     process.env.TZ='America/New_York';
     f.context.Date=class extends Date{constructor(...args){super(...(args.length?args:['2026-10-31T12:00:00-04:00']));}};
     assert.equal(f.run('daysLeft({renewalDate:"2026-11-02T00:00:00.000Z"})'),2);
