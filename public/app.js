@@ -19,16 +19,21 @@ const e = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<
 const action = (name, label, ico='', cls='button', id='') => `<button type="button" class="${cls}" data-action="${name}"${id?` data-id="${e(id)}"`:''}>${ico?icon(ico,16):''}${label}</button>`;
 const money = n => Number(n||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
 // Calendar fields keep their recorded day; only "today" follows the browser timezone.
+// Recorded text uses the same rule as the server reminder (YYYY-MM-DD or YYYY/M/D), so the page
+// never shows a due date that Telegram reminders cannot read.
 function calendarDate(value){
   if(!value)return null;
-  const match=typeof value==='string'&&/^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
-  const d=match?new Date(Number(match[1]),Number(match[2])-1,Number(match[3])):new Date(value);
-  return Number.isNaN(d.valueOf())?null:d;
+  if(Object.prototype.toString.call(value)==='[object Date]')return Number.isNaN(value.valueOf())?null:new Date(value.getFullYear(),value.getMonth(),value.getDate());
+  const match=typeof value==='string'&&/^(\d{4})([-/])(\d{1,2})\2(\d{1,2})(?:T\d.*)?$/.exec(value.trim());
+  if(!match)return null;
+  const year=Number(match[1]),month=Number(match[3])-1,day=Number(match[4]),d=new Date(year,month,day);
+  return d.getFullYear()===year&&d.getMonth()===month&&d.getDate()===day?d:null;
 }
-const shortDate = value => calendarDate(value)?.toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})||'未设置';
+const unreadableDate=value=>typeof value==='string'&&value.trim()!==''&&!calendarDate(value);
+const shortDate = value => calendarDate(value)?.toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})||(unreadableDate(value)?'日期无法识别':'未设置');
 const dateValue = value => {const d=calendarDate(value);return d?[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-'):'';};
 const daysLeft = s => {const d=calendarDate(s.renewalDate||s.renewalDateText);if(!d)return null;const t=new Date();return (Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())-Date.UTC(t.getFullYear(),t.getMonth(),t.getDate()))/86400000;};
-const dueText = s => {const d=daysLeft(s);return d===null?'未设置续费日期':d<0?`已到期 ${-d} 天`:d===0?'今天到期':`${d} 天后到期`;};
+const dueText = s => {const d=daysLeft(s);return d===null?(unreadableDate(s.renewalDate||s.renewalDateText)?'续费日期无法识别，请重新填写':'未设置续费日期'):d<0?`已到期 ${-d} 天`:d===0?'今天到期':`${d} 天后到期`;};
 const statusMap={online:['运行中',''],maintenance:['维护中','warning'],idle:['闲置','stopped'],expired:['已到期','danger']};
 const badge = s => {const [label,cls]=statusMap[s]||['未记录','stopped'];return `<span class="status ${cls}"><span class="dot"></span>${label}</span>`;};
 const cycleMap={monthly:'月',quarterly:'季',yearly:'年'};
@@ -245,7 +250,7 @@ function telegramSelectionForm(){
  const summary=telegramSelectionSummary(servers.map(s=>({checked:s.expiryReminder===true,dataset:{undated:String(daysLeft(s)===null)}})));
  return `<div class="telegram-selection-conflict info-box warning" role="alert" hidden></div><fieldset class="telegram-selection-controls"><legend class="sr-only">需要 Telegram 到期提醒的机器</legend><div class="telegram-selection-tools"><div>${action('telegram-select-all','全选','','button small-button')}${action('telegram-select-none','全不选','','button small-button')}</div><span class="field-hint">点击整行勾选</span></div><div class="telegram-machine-list">${servers.length?servers.map(server=>{
   const undated=daysLeft(server)===null;
-  return `<label class="telegram-machine-row"><input type="checkbox" name="serverIds" value="${e(server.id)}" data-undated="${undated}" ${server.expiryReminder===true?'checked':''}><span class="telegram-machine-copy"><strong>${e(server.name||'未命名机器')}</strong><span>${e(server.provider||'未设置服务商')}</span></span><span class="telegram-machine-date ${undated?'telegram-machine-warning':''}">${undated?'未填写续费日期':`到期：${e(shortDate(server.renewalDate||server.renewalDateText))}`}</span></label>`;
+  return `<label class="telegram-machine-row"><input type="checkbox" name="serverIds" value="${e(server.id)}" data-undated="${undated}" ${server.expiryReminder===true?'checked':''}><span class="telegram-machine-copy"><strong>${e(server.name||'未命名机器')}</strong><span>${e(server.provider||'未设置服务商')}</span></span><span class="telegram-machine-date ${undated?'telegram-machine-warning':''}">${undated?(unreadableDate(server.renewalDate||server.renewalDateText)?'续费日期无法识别':'未填写续费日期'):`到期：${e(shortDate(server.renewalDate||server.renewalDateText))}`}</span></label>`;
  }).join(''):'<p class="telegram-selection-empty">暂无机器，添加服务器后即可在这里选择。</p>'}</div></fieldset><p class="field-hint telegram-selection-count" data-selection-count aria-live="polite">${summary}</p><p class="field-hint telegram-selection-note">${!t.configured?'提醒配置尚未完成，保存选择后暂时无法发送 TG 确认。请到「配置提醒」填写 Bot Token 和 Chat ID。':!t.enabled?'提醒总开关尚未开启。选择仍会保存并发送 TG 确认，开启总开关后才会发送到期提醒。':'点击「确定选择」后保存，并向你的 TG 发送一条确认消息。'} 未填写有效续费日期的机器暂不发送到期提醒。</p>`;
 }
 function telegramSelectionDialog(){
