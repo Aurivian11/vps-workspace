@@ -7,7 +7,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const machine = (id,name,date,extra={}) => ({id,name,renewalDate:date,expiryReminder:true,...extra});
 const fixture = servers => ({settings:{telegram:{enabled:true,botToken:'123456:PRIVATE-BOT-TOKEN',chatId:'987654321'}},servers,telegramDeliveries:{}});
 const escape=value=>value.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const items=messages=>messages.flatMap(message=>[...message.matchAll(/<b>([^\n]*?)<\/b>\n(?:(\d{4}-\d{2}-\d{2})  ·  <b>([^<\n]*)<\/b>|(未填写续费日期，暂无法提醒))(?:\n<i>([^<\n]*)<\/i>)?/gu)].map(match=>({name:match[1],date:match[2]||null,remaining:match[3]||null,missing:!!match[4],status:match[5]||null})));
+const items=messages=>messages.flatMap(message=>[...message.matchAll(/<b>([^\n]*?)<\/b>\n[├└] (?:📅 (\d{4}-\d{2}-\d{2}) 周[日一二三四五六] · <b>([^<\n]*)<\/b>|⚠️ (未填写续费日期，暂无法提醒))(?:\n└ [^\n]*?(?:<i>([^<\n]*)<\/i>)?)?(?=\n|$)/gu)].map(match=>({name:match[1],date:match[2]||null,remaining:match[3]||null,missing:!!match[4],status:match[5]||null})));
 function receipt(state,server,kind,date=server.renewalDate,chatId=state.settings.telegram.chatId) {
  const destination=digest(state.settings.telegram.botToken.split(':')[0]+'\n'+chatId);
  state.telegramDeliveries[digest(server.id+'\n'+date+'\n'+destination)]={state:kind,serverId:server.id,renewalDate:date};
@@ -20,19 +20,19 @@ function assertMobile(message) {
 
 test('compact list shows only selected machines in expiry groups and hides redundant normal status',()=>{
  const state=fixture([machine('far','Later','2027-01-01'),machine('missing','No date',''),machine('near','Soon','2026-11-02'),machine('expired','Past','2026-10-28'),machine('off','Hidden','2026-10-29',{expiryReminder:false})]);
- const output=formatReminderTable(state,{now}),data=items(output);assert.equal(data.length,4);assertMobile(output[0]);assert.match(output[0],/^<b>VPS 到期提醒<\/b>/);assert.match(output[0],/已选 4 台 · 7 天内到期 1 台/);assert.ok(!/第 1\/1 页|自动提醒已开启/.test(output[0]));
+ const output=formatReminderTable(state,{now}),data=items(output);assert.equal(data.length,4);assertMobile(output[0]);assert.match(output[0],/^🗂 <b>VPS 到期清单<\/b>/);assert.match(output[0],/已选 <b>4<\/b> 台 · 7 天内到期 <b>1<\/b> 台/);assert.ok(!/第 1\/1 页|自动提醒已开启/.test(output[0]));
  assert.deepEqual(data[0],{name:'Past',date:'2026-10-28',remaining:'已过期 1 天',missing:false,status:null});assert.deepEqual(data[1],{name:'Soon',date:'2026-11-02',remaining:'4 天后到期',missing:false,status:'等待发送'});assert.equal(data[2].name,'Later');assert.equal(data[2].status,null);assert.deepEqual(data[3],{name:'No date',date:null,remaining:null,missing:true,status:null});assert.ok(!output.join('').includes('Hidden'));
  const groups=['🔴 已过期','🟠 7 天内到期','🔵 后续提醒','⚪ 待补日期'];for(let i=1;i<groups.length;i++)assert.ok(output[0].indexOf(groups[i-1])<output[0].indexOf(groups[i]));
 });
 
 test('Beijing midnight changes remaining calendar day and timestamp appears only at the end',()=>{
- const state=fixture([machine('a','Next day','2026-10-30')]);assert.equal(items(formatReminderTable(state,{now:new Date('2026-10-29T15:59:00Z')}))[0].remaining,'1 天后到期');
+ const state=fixture([machine('a','Next day','2026-10-30')]);assert.equal(items(formatReminderTable(state,{now:new Date('2026-10-29T15:59:00Z')}))[0].remaining,'明天到期');
  const output=formatReminderTable(state,{now:new Date('2026-10-29T16:01:00Z')});assert.match(output[0],/北京时间：2026-10-30 00:01<\/i>$/);assert.equal(items(output)[0].remaining,'今天到期');
 });
 
 test('seven-day and eight-day boundaries enter distinct groups and legacy dates work',()=>{
  const state=fixture([machine('a','Seven','2026-11-05'),machine('b','Eight',null,{renewalDateText:'2026/11/6'})]);const output=formatReminderTable(state,{now}),data=items(output);
- assert.equal(data[0].remaining,'7 天后到期');assert.equal(data[0].status,'等待发送');assert.equal(data[1].date,'2026-11-06');assert.equal(data[1].remaining,'8 天后到期');assert.equal(data[1].status,null);assert.match(output[0],/7 天内到期 1 台/);assert.match(output[0],/🟠 7 天内到期/);assert.match(output[0],/🔵 后续提醒/);assert.ok(!/🔴 已过期|⚪ 待补日期/.test(output[0]));
+ assert.equal(data[0].remaining,'7 天后到期');assert.equal(data[0].status,'等待发送');assert.equal(data[1].date,'2026-11-06');assert.equal(data[1].remaining,'8 天后到期');assert.equal(data[1].status,null);assert.match(output[0],/7 天内到期 <b>1<\/b> 台/);assert.match(output[0],/🟠 7 天内到期/);assert.match(output[0],/🔵 后续提醒/);assert.ok(!/🔴 已过期|⚪ 待补日期/.test(output[0]));
 });
 
 test('current destination and expiry receipts retain all exceptional delivery states',()=>{
@@ -46,7 +46,7 @@ test('paused and unconfigured reminders appear once globally without repetitive 
 });
 
 test('empty selection gives guidance without empty groups',()=>{
- const output=formatReminderTable(fixture([machine('off','Unselected','2026-11-01',{expiryReminder:false})]),{now});assert.equal(output.length,1);assert.match(output[0],/已选 0 台/);assert.match(output[0],/尚未选择/);assert.equal(items(output).length,0);assert.ok(!/🔴|🟠|🔵|⚪/.test(output[0]));assertMobile(output[0]);
+ const output=formatReminderTable(fixture([machine('off','Unselected','2026-11-01',{expiryReminder:false})]),{now});assert.equal(output.length,1);assert.match(output[0],/已选 <b>0<\/b> 台/);assert.match(output[0],/尚未选择/);assert.equal(items(output).length,0);assert.ok(!/🔴|🟠|🔵|⚪/.test(output[0]));assertMobile(output[0]);
 });
 
 test('HTML is escaped and control characters cannot inject entries or conceal fields',()=>{
@@ -62,7 +62,7 @@ test('only reminder metadata is emitted and source state stays unchanged',()=>{
 });
 
 test('1000 machines paginate at five per message, repeating only the nonempty group heading',()=>{
- const names=Array.from({length:1000},(_,index)=>'&&&&&&&&&&&&&&&&'+String(index).padStart(4,'0'));const output=formatReminderTable(fixture(names.map((name,index)=>machine(String(index),name,'2026-11-01'))),{now}),data=items(output);assert.equal(output.length,200);assert.equal(data.length,1000);assert.deepEqual(data.map(item=>item.name),names.map(escape));for(const [index,message]of output.entries()){assertMobile(message);assert.equal(items([message]).length,5);assert.match(message,new RegExp('第 '+(index+1)+'/'+output.length+' 页'));assert.equal((message.match(/<b>🟠 7 天内到期<\/b>/g)||[]).length,1);assert.ok(!/🔴 已过期|🔵 后续提醒|⚪ 待补日期/.test(message));}
+ const names=Array.from({length:1000},(_,index)=>'&&&&&&&&&&&&&&&&'+String(index).padStart(4,'0'));const output=formatReminderTable(fixture(names.map((name,index)=>machine(String(index),name,'2026-11-01'))),{now}),data=items(output);assert.equal(output.length,200);assert.equal(data.length,1000);assert.deepEqual(data.map(item=>item.name),names.map(escape));for(const [index,message]of output.entries()){assertMobile(message);assert.equal(items([message]).length,5);assert.match(message,new RegExp('第 '+(index+1)+'/'+output.length+' 页'));assert.equal((message.match(/<b>🟠 7 天内到期 · 1000 台<\/b>/g)||[]).length,1);assert.ok(!/🔴 已过期|🔵 后续提醒|⚪ 待补日期/.test(message));}
 });
 
 test('invalid dates are grouped as missing and invalid query times are rejected',()=>{

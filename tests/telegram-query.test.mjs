@@ -28,9 +28,9 @@ test('authorized private check sends HTML, commits cursor first and preserves cu
   f.hook(call => { if (call.method === 'getUpdates') f.change(state => { state.revision = 13; state.unrelated.latest = 'preserved'; }); });
   f.sendHook(() => { assert.equal(f.state.telegramQueryState.offset, 11); return { messageId: 7 }; });
   await f.worker.tick();
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].extra.parseMode, 'HTML'); assert.ok(!/<\/?(?:pre|code|table|blockquote)\b/i.test(f.sent[0].html)); assert.match(f.sent[0].html, /<b>🟠 7 天内到期<\/b>\n\n<b>Synthetic server<\/b>\n2026-11-05  ·  <b>7 天后到期<\/b>\n<i>等待发送<\/i>/); assert.ok(!f.sent[0].html.includes('SECRET-PASSWORD'));
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].extra.parseMode, 'HTML'); assert.ok(!/<\/?(?:pre|code|table|blockquote)\b/i.test(f.sent[0].html)); assert.match(f.sent[0].html, /<b>🟠 7 天内到期 · 1 台<\/b>\n\n<b>Synthetic server<\/b>\n├ 📅 2026-11-05 周四 · <b>7 天后到期<\/b>\n└ <i>等待发送<\/i>/); assert.ok(!f.sent[0].html.includes('SECRET-PASSWORD'));
   assert.equal(f.state.revision, 13); assert.deepEqual(f.state.servers, original.servers); assert.deepEqual(f.state.settings, original.settings); assert.deepEqual(f.state.unrelated, { keep: true, latest: 'preserved' });
-  assert.deepEqual(f.calls.map(c => c.method), ['getWebhookInfo','getUpdates']); assert.deepEqual(f.calls[1].payload.allowed_updates, ['message']); assert.equal(f.calls[1].payload.offset, 0); assert.equal(f.calls[1].payload.limit, 100);
+  assert.deepEqual(f.calls.map(c => c.method), ['getWebhookInfo','getUpdates']); assert.deepEqual(f.calls[1].payload.allowed_updates, ['message', 'callback_query']); assert.equal(f.calls[1].payload.offset, 0); assert.equal(f.calls[1].payload.limit, 100);
   const status = f.worker.status(); assert.equal(status.lastSuccessfulPollAt, new Date(baseTime).toISOString()); assert.ok(status.lastReplyAt); assert.equal(status.loopHealthy,true); assert.ok(!JSON.stringify(status).includes(TOKEN)); assert.ok(!JSON.stringify(status).includes(CHAT));
 });
 
