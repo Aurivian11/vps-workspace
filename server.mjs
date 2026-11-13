@@ -31,7 +31,7 @@ if(config.tls){
 if(!tlsOptions&&!['127.0.0.1','::1'].includes(config.host))throw Error('A public listener requires TLS.');
 const key=Buffer.from(config.key,'base64');if(key.length!==32)throw Error('Invalid encryption key.');
 const assets=new Map();
-for(const[name,type]of [['index.html','text/html; charset=utf-8'],['app.js','text/javascript; charset=utf-8'],['styles.css','text/css; charset=utf-8']])assets.set(name,{body:fs.readFileSync(`public/${name}`),type});
+for(const[name,type]of [['index.html','text/html; charset=utf-8'],['app.js','text/javascript; charset=utf-8'],['core.js','text/javascript; charset=utf-8'],['styles.css','text/css; charset=utf-8']])assets.set(name,{body:fs.readFileSync(`public/${name}`),type});
 // Load immutable code, assets, and the root-owned master key before giving up root.
 if(process.getuid?.()===0){process.setgroups([]);process.setgid(config.serviceGID);process.setuid(config.serviceUID);}
 if(process.getuid?.()===0)throw Error('Refusing to serve HTTP as root.');
