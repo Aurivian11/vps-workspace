@@ -57,6 +57,9 @@ test(`${tlsEnabled?'HTTPS':'private HTTP'} API authentication, encryption, CRUD,
   r=await req('/api/workspace');assert.equal(r.response.status,401);
   r=await req('/api/login','POST',{username:'qa_admin',password});assert.equal(r.response.status,401);
   r=await req('/api/login','POST',{username:'qa_admin',password:'Another-test-only-password-4492'});assert.equal(r.response.status,200);
+  // The single administrator signs in with the password alone; a wrong password is still refused.
+  r=await req('/api/login','POST',{password:'Another-test-only-password-4492'});assert.equal(r.response.status,200);
+  r=await req('/api/login','POST',{password:'Wrong-test-only-password-0000'});assert.equal(r.response.status,401);assert.equal(r.value.error,'密码或验证码不正确。');
   assert.ok(!output.includes(password));assert.ok(output.includes('"uid":62031'));
   const backupPath=`runtime/backups/restore-test-${randomUUID()}.vpsvault`;
   try{fs.writeFileSync(backupPath,encrypted,{mode:0o600});child.kill('SIGTERM');await new Promise(r=>{if(child.exitCode!==null)return r();child.once('exit',r);});const restored=spawnSync(process.execPath,['bin/restore.mjs',backupPath],{cwd:root,env:{...process.env,VPS_CONFIG:configFile},encoding:'utf8'});assert.equal(restored.status,0,restored.stderr);assert.equal(unseal(fs.readFileSync(dataFile,'utf8'),key).servers.length,1);assert.equal(fs.statSync(dataFile).uid,62031);}finally{fs.rmSync(backupPath,{force:true});}

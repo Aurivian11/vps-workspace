@@ -156,3 +156,9 @@ test('batch choices must be explicit and deleting an already removed server coun
   assert.match(app, /if \(!server\(id\) && goneIsDone\) \{ done\+\+; continue; \}/);
   assert.match(app, /method: 'DELETE' \}\); S\.ws\.revision = r\.revision; \}, \{ goneIsDone: true \}\);/);
 });
+
+test('sign-in asks only for the password (and a code), while first-time setup still names the account', () => {
+  assert.match(app, /\$\{setup \? field\('username', '用户名'/);
+  assert.match(app, /async login\(form\) \{[^}]*body: \{ password: value\(form, 'password'\), otp: value\(form, 'otp'\)\.trim\(\) \}/);
+  assert.doesNotMatch(app.slice(app.indexOf('async login(form)'), app.indexOf('async setup(form)')), /username/);
+});

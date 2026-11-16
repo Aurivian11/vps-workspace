@@ -181,11 +181,11 @@ function renderAuth() {
     <form class="auth-card" data-form="${setup ? 'setup' : 'login'}" novalidate>
       <div class="auth-brand">${LOGO}<div><strong>VPS 管家</strong><small>你的私人服务器资产台</small></div></div>
       <h1>${setup ? '创建管理账户' : '欢迎回来'}</h1>
-      <p class="lede">${setup ? '完成首次设置后即可开始管理。请使用一个独立的密码。' : '登录以继续管理你的服务器、续费与开销。'}</p>
+      <p class="lede">${setup ? '完成首次设置后即可开始管理。请使用一个独立的密码。' : '输入管理密码，继续管理你的服务器、续费与开销。'}</p>
       <div class="form-error" role="alert"></div>
       ${setup && !setupToken ? field('token', '首次设置令牌', 'text', 'required autocomplete="off"') : ''}
-      ${field('username', '用户名', 'text', 'required autocomplete="username" minlength="3" maxlength="40" autofocus')}
-      ${field('password', '密码', 'password', `required autocomplete="${setup ? 'new-password' : 'current-password'}" maxlength="128"${setup ? ' minlength="14"' : ''}`)}
+      ${setup ? field('username', '用户名', 'text', 'required autocomplete="username" minlength="3" maxlength="40" autofocus') : ''}
+      ${field('password', '密码', 'password', `required autocomplete="${setup ? 'new-password' : 'current-password'}" maxlength="128"${setup ? ' minlength="14"' : ' autofocus'}`)}
       ${setup ? field('confirmPassword', '确认密码', 'password', 'required autocomplete="new-password" minlength="14" maxlength="128"') : field('otp', '动态验证码（未开启可留空）', 'text', 'autocomplete="one-time-code" inputmode="numeric" maxlength="64"')}
       <button type="submit" class="btn primary block">${setup ? '创建并进入' : '登录'}${icon('arrow', 17)}</button>
       <p class="auth-foot">${icon('lock', 13)}数据只保存在你自己的服务器上，全程加密存储。</p>
@@ -844,7 +844,10 @@ async function restoreBackup(form) {
 // ── Form submissions ─────────────────────────────────────────────────────────
 const value = (form, name) => new FormData(form).get(name)?.toString() || '';
 const SUBMIT = {
-  async login(form) { await api('/login', { method: 'POST', body: { username: value(form, 'username').trim(), password: value(form, 'password'), otp: value(form, 'otp').trim() } }); await boot(); },
+  async login(form) {
+    if (!value(form, 'password')) throw new Error('请输入管理密码。');
+    await api('/login', { method: 'POST', body: { password: value(form, 'password'), otp: value(form, 'otp').trim() } }); await boot();
+  },
   async setup(form) {
     if (value(form, 'password') !== value(form, 'confirmPassword')) throw new Error('两次输入的密码不一致。');
     await api('/setup', { method: 'POST', body: { token: setupToken || value(form, 'token').trim(), username: value(form, 'username').trim(), password: value(form, 'password') } });

@@ -96,8 +96,8 @@ const handler=async(req,res)=>{headers(res);const requestID=token(8);res.setHead
   if(path==='/api/login'&&method==='POST'){
     rate(req,'login',12);const b=await body(req),a=vault.state.account,loginSecurityVersion=securityVersion;
     const valid=await verifyPassword(b.password,a?.password);
-    if(!a||!valid||!equal(b.username||'',a.username)||loginSecurityVersion!==securityVersion||vault.state.account.password.hash!==a.password.hash)throw fail(401,'用户名、密码或验证码不正确。');
-    if(!consumeSecondFactor(b.otp))throw fail(401,'用户名、密码或验证码不正确。');json(res,200,publicSession(createSession(res)));return;
+    if(!a||!valid||loginSecurityVersion!==securityVersion||vault.state.account.password.hash!==a.password.hash)throw fail(401,'密码或验证码不正确。');
+    if(!consumeSecondFactor(b.otp))throw fail(401,'密码或验证码不正确。');json(res,200,publicSession(createSession(res)));return;
   }
   auth(s);
   if(path==='/api/workspace'&&method==='GET'){const state=vault.state;json(res,200,{servers:state.servers.map(redactServer),commands:state.commands,settings:publicSettings(state.settings),telegramStatus:{...reminders.status(),supervisionEnabled:process.env.VPS_SUPERVISED==='1'},telegramQueryStatus:telegramQuery.status(),costs:calculateCosts(state.servers,state.settings.rates),customMonthly:calculateCustomMonthly(state.servers,state.settings.customMonthly?.serverIds,state.settings.rates),revision:state.revision});return;}
