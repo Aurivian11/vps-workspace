@@ -136,3 +136,30 @@ test('a stale reminder button never moves a date that was already changed elsewh
   const answer = f.calls.find(c => c.method === 'answerCallbackQuery').payload; assert.match(answer.text, /到期日已变为 2026-12-20/); assert.equal(answer.show_alert, true);
   assert.deepEqual(f.calls.find(c => c.method === 'editMessageReplyMarkup').payload.reply_markup, { inline_keyboard: [] }); assert.equal(f.state.revision, 5); assert.equal(f.state.servers[0].renewalHistory.length, 0);
 });
+
+test('the bot menu lists the commands for the configured chat once, and a failure never blocks polling', async () => {
+  let state = fixtureState([machine(1, 'Tokyo', '2026-11-14')]);
+  const calls = []; let failMenu = true;
+  const vault = { snapshot: () => structuredClone(state), save(next) { state = structuredClone(next); } };
+  const ok = result => ({ ok: true, status: 200, json: async () => ({ ok: true, result }) });
+  const fetchImpl = async (url, init) => { const method = url.slice(url.lastIndexOf('/') + 1), payload = JSON.parse(init.body); calls.push({ method, payload });
+    if (method === 'getWebhookInfo') return ok({ url: '' });
+    if (method === 'setMyCommands' && failMenu) return { ok: false, status: 500, json: async () => ({ ok: false, error_code: 500 }) };
+    return ok(method === 'getUpdates' ? [] : true); };
+  let instant = now.getTime();
+  const worker = createTelegramQueryWorker({ vault, menu: true, fetchImpl, send: async () => ({ messageId: 1 }), now: () => new Date(instant), pollTimeoutSeconds: 0 });
+  await worker.tick();
+  assert.deepEqual(calls.map(c => c.method), ['getWebhookInfo', 'setMyCommands', 'getUpdates']);
+  const menu = calls[1].payload;
+  assert.deepEqual(menu.scope, { type: 'chat', chat_id: CHAT });
+  assert.deepEqual(menu.commands.map(c => c.command), ['check', 'due', 'cost', 'help']);
+  for (const c of menu.commands) { assert.match(c.command, /^[a-z0-9_]{1,32}$/); assert.ok(c.description.length >= 1 && c.description.length <= 256); assert.ok(parseCommand('/' + c.command)); }
+  calls.length = 0; instant += 60000; await worker.tick(); assert.deepEqual(calls.map(c => c.method), ['getUpdates'], 'failed menu waits before retrying');
+  failMenu = false; calls.length = 0; instant += 600000; await worker.tick(); assert.deepEqual(calls.map(c => c.method), ['setMyCommands', 'getUpdates']);
+  calls.length = 0; instant += 60000; await worker.tick(); assert.deepEqual(calls.map(c => c.method), ['getUpdates'], 'registered once per configuration');
+  state.settings.telegram.chatId = '2222222222'; calls.length = 0; instant += 60000; await worker.tick();
+  assert.ok(calls.some(c => c.method === 'setMyCommands' && c.payload.scope.chat_id === '2222222222'), 'a new chat gets the menu');
+  // Without the option (tests, private mode) the menu is never touched.
+  const quiet = []; const plain = createTelegramQueryWorker({ vault, fetchImpl: async (url, init) => { quiet.push(url.slice(url.lastIndexOf('/') + 1)); return ok(url.endsWith('getWebhookInfo') ? { url: '' } : []); }, now: () => new Date(instant), pollTimeoutSeconds: 0 });
+  await plain.tick(); assert.ok(!quiet.includes('setMyCommands'));
+});
