@@ -42,7 +42,7 @@ const backups=createBackupManager({vault,key,directory:dirname(vaultFile)+'/back
 const backupPreviews=new Map();
 const reminders=createReminderWorker({vault,origin:origin.origin});
 const selectionConfirmer=createSelectionConfirmer({vault,origin:origin.origin});
-const telegramQuery=createTelegramQueryWorker({vault,enabled:config.mode!=='private'});
+const telegramQuery=createTelegramQueryWorker({vault,enabled:config.mode!=='private',menu:true});
 const sessions=new Map(), limiter=new RateLimiter();
 let telegramTestInFlight=false;
 function checkReminders(){queueMicrotask(()=>reminders.tick().catch(()=>console.error(JSON.stringify({event:'telegram-worker-failed'}))));}
